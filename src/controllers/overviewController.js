@@ -9,14 +9,13 @@ export const getOverview = async (req, res) => {
       })
       .countDocuments();
 
-    const courses = await courseModel.find({
-      manager: req.user._id,
-    });
-
-    const totalStudent = courses.reduce(
-      (acc, curr) => acc + curr.students.length,
-      0,
-    );
+    // Fix: Count unique students instead of total enrollments
+    const totalStudent = await userModel
+      .find({
+        role: "student",
+        manager: req.user._id,
+      })
+      .countDocuments();
 
     const coursesVideos = await courseModel
       .find({

@@ -13,7 +13,7 @@ export const verifyToken = async (req, res, next) => {
 
             const user = await userModel.findById(
                 decoded.data.id,
-                "_id name email role"
+                "_id name email role photo"
             )
 
             if (!user) {
@@ -27,6 +27,7 @@ export const verifyToken = async (req, res, next) => {
                 name: user.name,
                 email: user.email,
                 role: user.role,
+                photo: user.photo,
             }
             next()
         } catch (error) {

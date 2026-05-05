@@ -116,7 +116,7 @@ export const signInAction  = async (req, res) => {
      },
 
      process.env.SECRET_KEY_JWT,
-     {expiresIn: '30 days'}
+     {expiresIn: '7 days'}
 )
 
     return res.json({
@@ -124,6 +124,7 @@ export const signInAction  = async (req, res) => {
         data :{
             name: existingUser.name,
             email: existingUser.email,
+            photo: existingUser.photo,
             token,
             role: existingUser.role
         }
