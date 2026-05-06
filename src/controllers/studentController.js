@@ -1,5 +1,5 @@
 import userModel from "../models/userModel.js";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { mutateCourseSchema, mutateStudentSchema } from "../utils/schema.js";
 import cloudinary, { uploadStudentPhoto, deleteFromCloudinary } from "../config/cloudinary.js";
 

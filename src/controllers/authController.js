@@ -1,4 +1,4 @@
-import bcrypt from 'bcrypt'
+import bcrypt from 'bcryptjs'
 import userModel from '../models/userModel.js'
 import TransactionModel from '../models/transactionModel.js'
 import jwt from 'jsonwebtoken'
