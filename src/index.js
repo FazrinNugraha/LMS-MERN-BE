@@ -13,7 +13,6 @@ import categoryRoutes from "./routes/categoryRoutes.js"
 dotenv.config()
 
 const app = express()
-connectDB()
 
 const port = process.env.PORT || 3000
 
@@ -34,6 +33,12 @@ app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
 app.use(express.static('public'))
+
+// ✅ Middleware: pastikan DB terhubung di setiap request (penting untuk Serverless)
+app.use(async (req, res, next) => {
+  await connectDB()
+  next()
+})
 
 app.get('/', (req, res) => {
   res.json({ text: 'LMS API is running 🚀' })
