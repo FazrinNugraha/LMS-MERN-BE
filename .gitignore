@@ -6,5 +6,12 @@
 # Dependencies
 node_modules/
 
+# Vercel
+.vercel/
+
 # Logs
 *.log
+
+# OS files
+.DS_Store
+Thumbs.db
