@@ -1,10 +1,9 @@
 import courseModel from "../models/courseModel.js";
-import fs from "fs";
 import { mutateCourseSchema } from "../utils/schema.js";
 import userModel from "../models/userModel.js";
 import categoryModel from "../models/categoryModel.js";
-import path, { resolve } from "path";
 import courseDetailModel from "../models/courseDetailModel.js";
+import cloudinary, { uploadCourseThumbnail, deleteFromCloudinary } from "../config/cloudinary.js";
 
 export const getCourses = async (req, res) => {
   try {
@@ -25,12 +24,11 @@ export const getCourses = async (req, res) => {
         select: "name ",
       });
 
-    const imageUrl = process.env.APP_URL + "/uploads/courses/";
-
+    // ✅ Cloudinary sudah return full URL, tidak perlu concat lagi
     const response = courses.map((item) => {
       return {
         ...item.toObject(),
-        thumbnailUrl: imageUrl + item.thumbnail,
+        thumbnailUrl: item.thumbnail, // Sudah full URL dari Cloudinary
         totalStudents: item.students.length,
       };
     });
@@ -85,13 +83,12 @@ export const getCourseById = async (req, res) => {
         select: preview === "true" ? "title type youtubeId text" : "title type",
       });
 
-    const imageUrl = process.env.APP_URL + "/uploads/courses/";
-
+    // ✅ Cloudinary sudah return full URL
     return res.json({
       message: "Get course by id success",
       data: {
         ...course.toObject(),
-        thumbnail_url: imageUrl + course.thumbnail,
+        thumbnail_url: course.thumbnail, // Sudah full URL dari Cloudinary
       }
     });
   } catch (error) {
@@ -105,16 +102,12 @@ export const postCourse = async (req, res) => {
   try {
     const body = req.body;
     console.log("req.body:", body);
+    console.log("req.file:", req.file ? { originalname: req.file.originalname, size: req.file.size, mimetype: req.file.mimetype } : null);
 
     // Validasi input pakai Zod
     const parse = mutateCourseSchema.safeParse(body);
     if (!parse.success) {
       const errorMessages = parse.error.issues.map((e) => e.message);
-
-      // Hapus file kalau ada, tapi validasi gagal
-      if (req?.file?.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
 
       return res.status(400).json({
         message: "Validation Error",
@@ -131,13 +124,24 @@ export const postCourse = async (req, res) => {
       });
     }
 
-    // ✅ Buat course baru
+    // ✅ Cek apakah file ada
+    if (!req.file) {
+      return res.status(400).json({
+        message: "Thumbnail is required",
+      });
+    }
+
+    // ✅ Upload ke Cloudinary secara manual (kompatibel multer v2)
+    const cloudinaryResult = await uploadCourseThumbnail(req.file);
+    console.log("Cloudinary URL:", cloudinaryResult.secure_url);
+
+    // ✅ Buat course baru - Simpan full URL dari Cloudinary
     const course = new courseModel({
       name: parse.data.name,
       category: category._id,
       description: parse.data.description,
       tagline: parse.data.tagline,
-      thumbnail: req.file?.filename, // bukan filname
+      thumbnail: cloudinaryResult.secure_url, // Full URL dari Cloudinary
       manager: req.user?._id,
     });
 
@@ -157,7 +161,7 @@ export const postCourse = async (req, res) => {
       data: course,
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error creating course:", error);
     return res.status(500).json({
       message: "Internal Server Error",
       error: error.message,
@@ -176,11 +180,6 @@ export const updateCourse = async (req, res) => {
     if (!parse.success) {
       const errorMessages = parse.error.issues.map((e) => e.message);
 
-      // Hapus file kalau ada, tapi validasi gagal
-      if (req?.file?.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-
       return res.status(400).json({
         message: "Validation Error",
         data: null,
@@ -198,12 +197,31 @@ export const updateCourse = async (req, res) => {
       });
     }
 
+    let thumbnailUrl = oldCourse.thumbnail;
+
+    // ✅ Jika ada file baru, upload ke Cloudinary dan hapus yang lama
+    if (req.file) {
+      // Upload file baru ke Cloudinary
+      const cloudinaryResult = await uploadCourseThumbnail(req.file);
+      thumbnailUrl = cloudinaryResult.secure_url;
+
+      // Hapus file lama dari Cloudinary
+      if (oldCourse.thumbnail) {
+        try {
+          await deleteFromCloudinary(oldCourse.thumbnail);
+        } catch (cloudinaryError) {
+          console.error("Cloudinary delete error:", cloudinaryError);
+          // Lanjutkan update meskipun gagal hapus file lama
+        }
+      }
+    }
+
     await courseModel.findByIdAndUpdate(courseId, {
       name: parse.data.name,
       category: category._id,
       description: parse.data.description,
       tagline: parse.data.tagline,
-      thumbnail: req?.file ? req.file?.filename : oldCourse.thumbnail,
+      thumbnail: thumbnailUrl,
       manager: req.user._id,
     });
 
@@ -229,19 +247,17 @@ export const deleteCourse = async (req, res) => {
       return res.status(404).json({ message: "Course not found" });
     }
 
-    const dirname = path.resolve();
-    const filePath = path.join(
-      dirname,
-      "public/uploads/courses",
-      course.thumbnail,
-    );
-
-    // jika thumbnail ada, hapus filenya
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // ✅ Hapus dari Cloudinary
+    if (course.thumbnail) {
+      try {
+        await deleteFromCloudinary(course.thumbnail);
+      } catch (cloudinaryError) {
+        console.error("Cloudinary delete error:", cloudinaryError);
+        // Lanjutkan hapus dari database meskipun gagal hapus dari Cloudinary
+      }
     }
 
-    // tetap hapus course dari database
+    // Hapus course dari database
     await courseModel.findByIdAndDelete(id);
 
     return res.json({
@@ -363,12 +379,10 @@ export const getStudentsByCourseId = async (req,res) => {
       select: "name email photo",
     })
 
-    const photoUrl = process.env.APP_URL + "/uploads/students/";
-
     const studentMap = course?.students?.map((item) => {
       return {
         ...item.toObject(),
-        photo_url: photoUrl + item.photo,
+        photo_url: item.photo, // ✅ Sudah full Cloudinary URL
       }
     })    
 

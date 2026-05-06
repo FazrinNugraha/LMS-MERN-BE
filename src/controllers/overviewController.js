@@ -67,12 +67,10 @@ export const getOverview = async (req, res) => {
         select: "name ",
       });
 
-    const imageUrl = process.env.APP_URL + "/uploads/courses/";
-
     const responseCourses = courseList.map((item) => {
       return {
         ...item.toObject(),
-        thumbnailUrl: imageUrl + item.thumbnail,
+        thumbnailUrl: item.thumbnail, // ✅ Sudah full Cloudinary URL
         totalStudents: item.students.length,
       };
     });
@@ -84,12 +82,10 @@ export const getOverview = async (req, res) => {
       })
       .select("name courses photo");
 
-    const photoUrl = process.env.APP_URL + "/uploads/students/";
-
     const responseStudents = students.map((item) => {
       return {
         ...item.toObject(),
-        photo_url: photoUrl + item.photo,
+        photo_url: item.photo, // ✅ Sudah full Cloudinary URL
       };
     });
 

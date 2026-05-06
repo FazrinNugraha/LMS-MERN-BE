@@ -1,8 +1,7 @@
 import userModel from "../models/userModel.js";
 import bcrypt from "bcrypt";
 import { mutateCourseSchema, mutateStudentSchema } from "../utils/schema.js";
-import fs from "fs";
-import path from "path";
+import cloudinary, { uploadStudentPhoto, deleteFromCloudinary } from "../config/cloudinary.js";
 
 export const getStudent = async (req, res) => {
   try {
@@ -13,12 +12,11 @@ export const getStudent = async (req, res) => {
       })
       .select("name courses photo");
 
-    const photoUrl = process.env.APP_URL + "/uploads/students/";
-
+    // ✅ Cloudinary sudah return full URL
     const response = student.map((item) => {
       return {
         ...item.toObject(),
-        photo_url: photoUrl + item.photo,
+        photo_url: item.photo, // Sudah full URL dari Cloudinary
       };
     });
 
@@ -61,15 +59,18 @@ export const postStudent = async (req, res) => {
     if (!parse.success) {
       const errorMessages = parse.error.issues.map((e) => e.message);
 
-      if (req?.file?.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-
       return res.status(400).json({
         message: "Validation Error",
         data: null,
         errors: errorMessages,
       });
+    }
+
+    // ✅ Upload foto ke Cloudinary secara manual (kompatibel multer v2)
+    let photoUrl = null;
+    if (req.file) {
+      const cloudinaryResult = await uploadStudentPhoto(req.file);
+      photoUrl = cloudinaryResult.secure_url;
     }
 
     const hashedPassword = await bcrypt.hashSync(body.password, 12);
@@ -78,7 +79,7 @@ export const postStudent = async (req, res) => {
       name: parse.data.name,
       email: parse.data.email,
       password: hashedPassword,
-      photo: req.file?.filename,
+      photo: photoUrl, // Full URL dari Cloudinary
       role: "student",
       manager: req.user._id,
     });
@@ -109,10 +110,6 @@ export const updateStudent = async (req, res) => {
     if (!parse.success) {
       const errorMessages = parse.error.issues.map((e) => e.message);
 
-      if (req?.file?.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-
       return res.status(400).json({
         message: "Validation Error",
         data: null,
@@ -126,11 +123,28 @@ export const updateStudent = async (req, res) => {
       ? await bcrypt.hashSync(parse.data.password, 12)
       : student.password;
 
+    let photoUrl = student.photo;
+
+    // ✅ Jika ada file baru, upload ke Cloudinary dan hapus yang lama
+    if (req.file) {
+      const cloudinaryResult = await uploadStudentPhoto(req.file);
+      photoUrl = cloudinaryResult.secure_url;
+
+      // Hapus file lama dari Cloudinary
+      if (student.photo) {
+        try {
+          await deleteFromCloudinary(student.photo);
+        } catch (cloudinaryError) {
+          console.error("Cloudinary delete error:", cloudinaryError);
+        }
+      }
+    }
+
     await userModel.findByIdAndUpdate(id, {
       name: parse.data.name,
       email: parse.data.email,
       password: hashedPassword,
-      photo: req.file ? req.file.filename : student.photo,
+      photo: photoUrl,
     });
 
     await student.save();
@@ -163,15 +177,13 @@ export const deleteStudent = async (req, res) => {
       },
     );
 
-    const dirname = path.resolve();
-    const filePath = path.join(
-      dirname,
-      "public/uploads/students",
-      student.photo,
-    );
-
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // ✅ Hapus dari Cloudinary
+    if (student.photo) {
+      try {
+        await deleteFromCloudinary(student.photo);
+      } catch (cloudinaryError) {
+        console.error("Cloudinary delete error:", cloudinaryError);
+      }
     }
 
     await userModel.findByIdAndDelete(id);
@@ -199,11 +211,11 @@ export const getCoursesStudents = async (req, res) => {
       },
     });
 
-    const imageUrl = process.env.APP_URL + "/uploads/courses/";
+    // ✅ Cloudinary sudah return full URL
     const response = user.courses.map((item) => {
       return {
         ...item.toObject(),
-        thumbnail_url: imageUrl + item.thumbnail,
+        thumbnail_url: item.thumbnail, // Sudah full URL dari Cloudinary
       };
     })
     return res.status(200).json({

@@ -1,17 +1,11 @@
 import express from 'express';
 import { deleteStudent, getStudent, updateStudent } from '../controllers/studentController.js';
 import { verifyToken } from '../middlewares/verifyToken.js';
-import multer from 'multer';
-import { fileFilter, fileStorage } from '../utils/multer.js';
+import { upload } from '../utils/multer.js';
 import { getStudentById, postStudent } from '../controllers/studentController.js';
 import { getCoursesStudents } from '../controllers/studentController.js';
 
 const studentRoutes = express.Router();
-
-const upload = multer({ 
-    storage: fileStorage("students"),
-    fileFilter
- });
 
 studentRoutes.get('/students', verifyToken, getStudent);
 studentRoutes.get('/students/courses', verifyToken, getCoursesStudents); // ⚠️ HARUS sebelum :id

@@ -1,34 +1,27 @@
 import multer from "multer";
 
-export const fileStorageCourses = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'public/uploads/courses');
-    },
-
-    filename: (req, file, cb) => {
-        const ext = file.originalname.split('.')[1]
-        const uniqId = `${Date.now()}-${Math.round(Math.random() * 1E9)}`
-        cb(null, `${file.fieldname}-${uniqId}.${ext}`)
-    }
-})
-
-export const fileStorage = (path = "courses") => multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, `public/uploads/${path}`);
-    },
-
-    filename: (req, file, cb) => {
-        const ext = file.originalname.split('.')[1]
-        const uniqId = `${Date.now()}-${Math.round(Math.random() * 1E9)}`
-        cb(null, `${file.fieldname}-${uniqId}.${ext}`)
-    }
-})
+// ✅ Menggunakan memoryStorage (kompatibel dengan multer v2)
+// File disimpan di memory sebagai Buffer, lalu di-upload manual ke Cloudinary
+const storage = multer.memoryStorage();
 
 export const fileFilter = (req, file, cb) => {
-    if (file.mimetype === 'image/png' || file.mimetype === 'image/jpg' || file.mimetype === 'image/jpeg') {
-        cb(null, true)  
-    } else {
-        cb(null, false)
-    }
-}
+  if (
+    file.mimetype === 'image/png' || 
+    file.mimetype === 'image/jpg' || 
+    file.mimetype === 'image/jpeg' || 
+    file.mimetype === 'image/webp'
+  ) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files (PNG, JPG, JPEG, WEBP) are allowed!'), false);
+  }
+};
 
+// Single multer instance menggunakan memoryStorage
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // Max 5MB
+  },
+});
