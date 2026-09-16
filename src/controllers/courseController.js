@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import courseModel from "../models/courseModel.js";
 import { mutateCourseSchema } from "../utils/schema.js";
 import userModel from "../models/userModel.js";
@@ -7,7 +8,6 @@ import cloudinary, { uploadCourseThumbnail, deleteFromCloudinary } from "../conf
 
 export const getCourses = async (req, res) => {
   try {
-    console.log("req.user._id:", req.user?._id);
     const courses = await courseModel
       .find({
         manager: req.user?._id,
@@ -44,26 +44,35 @@ export const getCourses = async (req, res) => {
   }
 };
 
-export const getCategories = async (req, res) => {
-  try {
-    const categories = await categoryModel.find();
-
-    return res.json({
-      message: "Get categories success",
-      data: categories,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      message: "Internal Server Error",
-    });
-  }
-};
-
 export const getCourseById = async (req, res) => {
   try {
     const { id } = req.params;
 
     const { preview } = req.query;
+
+    // 🔒 Otorisasi: hanya manager pemilik course atau student yang ter-enroll
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const courseAccess = await courseModel.findById(id).select("manager students");
+
+    if (!courseAccess) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const currentUserId = req.user._id.toString();
+    const isOwner = courseAccess.manager?.toString() === currentUserId;
+    const isEnrolled = (courseAccess.students ?? []).some(
+      (studentId) => studentId.toString() === currentUserId
+    );
+
+    if (!isOwner && !isEnrolled) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: you do not have access to this course",
+      });
+    }
 
     const course = await courseModel
       .findById(id)
@@ -73,21 +82,22 @@ export const getCourseById = async (req, res) => {
       })
       .populate({
         path: "details",
-        select: "title type",
-      })
-
-
-
-      .populate({
-        path: "details",
         select: preview === "true" ? "title type youtubeId text" : "title type",
       });
+
+    const courseData = course.toObject();
+
+    // Student hanya boleh melihat info course-nya, jangan bocorkan daftar siswa & id manager
+    if (!isOwner) {
+      delete courseData.students;
+      delete courseData.manager;
+    }
 
     // ✅ Cloudinary sudah return full URL
     return res.json({
       message: "Get course by id success",
       data: {
-        ...course.toObject(),
+        ...courseData,
         thumbnail_url: course.thumbnail, // Sudah full URL dari Cloudinary
       }
     });
@@ -101,8 +111,6 @@ export const getCourseById = async (req, res) => {
 export const postCourse = async (req, res) => {
   try {
     const body = req.body;
-    console.log("req.body:", body);
-    console.log("req.file:", req.file ? { originalname: req.file.originalname, size: req.file.size, mimetype: req.file.mimetype } : null);
 
     // Validasi input pakai Zod
     const parse = mutateCourseSchema.safeParse(body);
@@ -149,11 +157,11 @@ export const postCourse = async (req, res) => {
 
     // Update category dan user
     await categoryModel.findByIdAndUpdate(category._id, {
-      $push: { courses: course._id },
+      $addToSet: { courses: course._id },
     });
 
     await userModel.findByIdAndUpdate(req.user?._id, {
-      $push: { courses: course._id },
+      $addToSet: { courses: course._id },
     });
 
     return res.status(201).json({
@@ -164,7 +172,7 @@ export const postCourse = async (req, res) => {
     console.error("Error creating course:", error);
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -189,11 +197,20 @@ export const updateCourse = async (req, res) => {
 
     // ✅ Cari kategori di collection Category
     const category = await categoryModel.findById(parse.data.categoryId);
-    const oldCourse = await courseModel.findById(courseId);
+    const oldCourse = await courseModel.findOne({
+      _id: courseId,
+      manager: req.user._id,
+    });
 
     if (!category) {
       return res.status(400).json({
         message: "Category not found",
+      });
+    }
+
+    if (!oldCourse) {
+      return res.status(404).json({
+        message: "Course not found",
       });
     }
 
@@ -232,7 +249,7 @@ export const updateCourse = async (req, res) => {
     console.error(error);
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -241,7 +258,11 @@ export const deleteCourse = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const course = await courseModel.findById(id);
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const course = await courseModel.findOne({ _id: id, manager: req.user._id });
 
     if (!course) {
       return res.status(404).json({ message: "Course not found" });
@@ -257,8 +278,14 @@ export const deleteCourse = async (req, res) => {
       }
     }
 
-    // Hapus course dari database
+    // Hapus course dari database (hook findOneAndDelete juga membersihkan
+    // category.courses, courseDetail, dan students[].courses)
     await courseModel.findByIdAndDelete(id);
+
+    // Bersihkan referensi course di data manager (sebelumnya tidak dibersihkan → data stale)
+    await userModel.findByIdAndUpdate(course.manager, {
+      $pull: { courses: course._id },
+    });
 
     return res.json({
       message: "Course deleted successfully",
@@ -267,7 +294,7 @@ export const deleteCourse = async (req, res) => {
     console.error(error);
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -276,7 +303,14 @@ export const postContentCourse = async (req, res) => {
   try {
     const body = req.body;
 
-    const course = await courseModel.findById(body.courseId);
+    const course = await courseModel.findOne({
+      _id: body.courseId,
+      manager: req.user._id,
+    });
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     const postContent = new courseDetailModel({
       title: body.title,
@@ -289,7 +323,7 @@ export const postContentCourse = async (req, res) => {
     await courseModel.findByIdAndUpdate(
       course._id,
       {
-        $push: { details: postContent._id },
+        $addToSet: { details: postContent._id },
       },
       { new: true },
     );
@@ -301,7 +335,7 @@ export const postContentCourse = async (req, res) => {
     console.error(error);
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -311,7 +345,32 @@ export const updateContentCourse = async (req, res) => {
     const { id } = req.params
     const body = req.body;
 
-    const course = await courseModel.findById(body.courseId);
+    const content = await courseDetailModel.findById(id);
+
+    if (!content) {
+      return res.status(404).json({ message: "Content not found" });
+    }
+
+    const isContentOwner = await courseModel.exists({
+      _id: content.course,
+      manager: req.user._id,
+    });
+
+    if (!isContentOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: you do not have access to this content",
+      });
+    }
+
+    const course = await courseModel.findOne({
+      _id: body.courseId,
+      manager: req.user._id,
+    });
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
     await courseDetailModel.findByIdAndUpdate(id, {
       title: body.title,
@@ -329,7 +388,7 @@ export const updateContentCourse = async (req, res) => {
     console.error(error);
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -337,6 +396,24 @@ export const updateContentCourse = async (req, res) => {
 export const deleteContentCourse = async (req, res) => {
   try {
     const { id } = req.params;
+
+    const content = await courseDetailModel.findById(id);
+
+    if (!content) {
+      return res.status(404).json({ message: "Content not found" });
+    }
+
+    const isContentOwner = await courseModel.exists({
+      _id: content.course,
+      manager: req.user._id,
+    });
+
+    if (!isContentOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: you do not have access to this content",
+      });
+    }
 
     await courseDetailModel.findByIdAndDelete(id);
 
@@ -346,7 +423,7 @@ export const deleteContentCourse = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 }
@@ -357,6 +434,22 @@ export const getDetailContent = async (req, res) => {
 
     const content = await courseDetailModel.findById(id);
 
+    if (!content) {
+      return res.status(404).json({ message: "Content not found" });
+    }
+
+    const isContentOwner = await courseModel.exists({
+      _id: content.course,
+      manager: req.user._id,
+    });
+
+    if (!isContentOwner) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden: you do not have access to this content",
+      });
+    }
+
     return res.json({
       message: "Get detail content success",
       data: content
@@ -364,7 +457,7 @@ export const getDetailContent = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     })
   }
 }
@@ -374,12 +467,24 @@ export const getStudentsByCourseId = async (req,res) => {
 
     const { id } = req.params;
 
-    const course = await courseModel.findById(id).select('name').populate({
-      path: "students",
-      select: "name email photo",
-    })
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Course not found" });
+    }
 
-    const studentMap = course?.students?.map((item) => {
+    const course = await courseModel
+      .findOne({ _id: id, manager: req.user._id })
+      .select('name')
+      .populate({
+        path: "students",
+        select: "name email photo",
+      })
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    // filter(Boolean) supaya tetap aman kalau ada referensi siswa yang sudah dihapus
+    const studentMap = course.students.filter(Boolean).map((item) => {
       return {
         ...item.toObject(),
         photo_url: item.photo, // ✅ Sudah full Cloudinary URL
@@ -389,7 +494,7 @@ export const getStudentsByCourseId = async (req,res) => {
     return res.json({
       message: "Get students by course id success",
       data: {
-        ...course,
+        ...course.toObject(),
         students: studentMap
       }
     })
@@ -397,7 +502,7 @@ export const getStudentsByCourseId = async (req,res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     })
   }
 }
@@ -407,14 +512,48 @@ export const postStudentToCourseById = async (req, res) => {
     const { id } = req.params;
     const { studentId } = req.body;
 
+    if (
+      !mongoose.Types.ObjectId.isValid(id) ||
+      !mongoose.Types.ObjectId.isValid(studentId)
+    ) {
+      return res.status(404).json({ message: "Course or student not found" });
+    }
+
+    // 🔒 Course harus milik manager yang sedang login
+    const course = await courseModel.findOne({ _id: id, manager: req.user._id });
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    // 🔒 Student harus benar-benar siswa milik manager yang sedang login
+    const student = await userModel.findOne({
+      _id: studentId,
+      role: "student",
+      manager: req.user._id,
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    // Hindari relasi ganda kalau siswa sudah terdaftar di course ini
+    const alreadyEnrolled = (course.students ?? []).some(
+      (enrolledId) => enrolledId.toString() === student._id.toString(),
+    );
+
+    if (alreadyEnrolled) {
+      return res.json({ message: "Student already added to this course" });
+    }
+
     await userModel.findByIdAndUpdate(studentId, {
-      $push: { 
+      $addToSet: { 
         courses: id 
       },
     }); 
 
     await courseModel.findByIdAndUpdate(id, {
-      $push: { 
+      $addToSet: { 
         students: studentId 
       },
     });
@@ -426,7 +565,7 @@ export const postStudentToCourseById = async (req, res) => {
   } catch (error) {
         return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     })
   }
 }
@@ -435,6 +574,31 @@ export const deletetToCourseById = async (req, res) => {
   try {
     const { id } = req.params;
     const { studentId } = req.body;
+
+    if (
+      !mongoose.Types.ObjectId.isValid(id) ||
+      !mongoose.Types.ObjectId.isValid(studentId)
+    ) {
+      return res.status(404).json({ message: "Course or student not found" });
+    }
+
+    // 🔒 Course harus milik manager yang sedang login
+    const course = await courseModel.findOne({ _id: id, manager: req.user._id });
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    // 🔒 Student harus benar-benar siswa milik manager yang sedang login
+    const student = await userModel.findOne({
+      _id: studentId,
+      role: "student",
+      manager: req.user._id,
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
 
     await userModel.findByIdAndUpdate(studentId, {
       $pull: {
@@ -455,7 +619,7 @@ export const deletetToCourseById = async (req, res) => {
   } catch (error) {
         return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     })
   }
 }

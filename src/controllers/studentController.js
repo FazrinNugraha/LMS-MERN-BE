@@ -1,7 +1,10 @@
+import mongoose from "mongoose";
 import userModel from "../models/userModel.js";
+import courseModel from "../models/courseModel.js";
+import { caseInsensitiveExact } from "../utils/regex.js";
 import bcrypt from "bcryptjs";
-import { mutateCourseSchema, mutateStudentSchema } from "../utils/schema.js";
-import cloudinary, { uploadStudentPhoto, deleteFromCloudinary } from "../config/cloudinary.js";
+import { mutateStudentSchema } from "../utils/schema.js";
+import { uploadStudentPhoto, deleteFromCloudinary } from "../config/cloudinary.js";
 
 export const getStudent = async (req, res) => {
   try {
@@ -27,7 +30,7 @@ export const getStudent = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -36,7 +39,20 @@ export const getStudentById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const student = await userModel.findById(id).select("name email courses photo");
+    // Guard penting: id yang tidak valid JANGAN sampai dipakai di query Mongo,
+    // karena filter dengan _id tidak valid bisa "nyasar" ke dokumen lain.
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    //  Hanya siswa milik manager yang sedang login
+    const student = await userModel
+      .findOne({ _id: id, role: "student", manager: req.user._id })
+      .select("name email courses photo");
+
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
 
     return res.status(200).json({
       message: "Get student successfully",
@@ -45,7 +61,7 @@ export const getStudentById = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -66,14 +82,23 @@ export const postStudent = async (req, res) => {
       });
     }
 
-    // ✅ Upload foto ke Cloudinary secara manual (kompatibel multer v2)
-    let photoUrl = null;
-    if (req.file) {
-      const cloudinaryResult = await uploadStudentPhoto(req.file);
-      photoUrl = cloudinaryResult.secure_url;
+    // Cegah email ganda (case-insensitive)
+    const emailTaken = await userModel.exists({
+      email: caseInsensitiveExact(parse.data.email),
+    });
+
+    if (emailTaken) {
+      return res.status(400).json({ message: "Email already registered" });
     }
 
-    const hashedPassword = await bcrypt.hashSync(body.password, 12);
+    // ✅ Foto wajib ada (multer v2 memoryStorage → upload manual ke Cloudinary)
+    if (!req.file) {
+      return res.status(400).json({ message: "Photo is required" });
+    }
+
+    const photoUrl = (await uploadStudentPhoto(req.file)).secure_url;
+
+    const hashedPassword = bcrypt.hashSync(body.password, 12);
 
     const student = new userModel({
       name: parse.data.name,
@@ -84,14 +109,19 @@ export const postStudent = async (req, res) => {
       manager: req.user._id,
     });
     await student.save();
+
+    // Jangan pernah kirim hash password ke client
+    const studentResponse = student.toObject();
+    delete studentResponse.password;
+
     return res.status(201).json({
       message: "Student created successfully",
-      data: student,
+      data: studentResponse,
     });
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -100,6 +130,20 @@ export const updateStudent = async (req, res) => {
   try {
     const { id } = req.params;
     const body = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    // Frontend saat mode edit mengirim FormData dengan nilai undefined → menjadi string
+    // "undefined"/"null"/"". Nilai seperti itu BUKAN password, jadi harus dianggap kosong;
+    // kalau tidak, password siswa akan ter-reset menjadi literal "undefined".
+    if (
+      typeof body.password !== "string" ||
+      ["", "undefined", "null"].includes(body.password.trim().toLowerCase())
+    ) {
+      delete body.password;
+    }
 
     const parse = mutateStudentSchema
       .partial({
@@ -117,10 +161,29 @@ export const updateStudent = async (req, res) => {
       });
     }
 
-    const student = await userModel.findById(id);
+    //  Hanya siswa milik manager yang sedang login
+    const student = await userModel.findOne({
+      _id: id,
+      role: "student",
+      manager: req.user._id,
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    // Cegah bentrok email dengan user lain (case-insensitive)
+    const emailTaken = await userModel.exists({
+      _id: { $ne: student._id },
+      email: caseInsensitiveExact(parse.data.email),
+    });
+
+    if (emailTaken) {
+      return res.status(400).json({ message: "Email already registered" });
+    }
 
     const hashedPassword = parse.data.password
-      ? await bcrypt.hashSync(parse.data.password, 12)
+      ? bcrypt.hashSync(parse.data.password, 12)
       : student.password;
 
     let photoUrl = student.photo;
@@ -140,22 +203,29 @@ export const updateStudent = async (req, res) => {
       }
     }
 
-    await userModel.findByIdAndUpdate(id, {
-      name: parse.data.name,
-      email: parse.data.email,
-      password: hashedPassword,
-      photo: photoUrl,
-    });
+    const updatedStudent = await userModel
+      .findOneAndUpdate(
+        { _id: student._id, role: "student", manager: req.user._id },
+        {
+          name: parse.data.name,
+          email: parse.data.email,
+          password: hashedPassword,
+          photo: photoUrl,
+          // Menandai waktu ganti password → semua token lama otomatis invalid (lihat verifyToken)
+          ...(parse.data.password ? { passwordChangedAt: new Date() } : {}),
+        },
+        { new: true },
+      )
+      .select("-password");
 
-    await student.save();
     return res.status(201).json({
       message: "Update created successfully",
-      data: student,
+      data: updatedStudent,
     });
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -164,15 +234,31 @@ export const deleteStudent = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const student = await userModel.findById(id);
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ message: "Student not found" });
+    }
 
-    await userModel.findOneAndUpdate(
+    //  Hanya siswa milik manager yang sedang login
+    const student = await userModel.findOne({
+      _id: id,
+      role: "student",
+      manager: req.user._id,
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    // Hapus referensi siswa dari semua course.
+    // Sebelumnya memakai userModel.findOneAndUpdate({ students: id }) padahal field
+    // `students` ada di model Course, jadi query ini tidak pernah match.
+    await courseModel.updateMany(
       {
-        students: id,
+        students: student._id,
       },
       {
         $pull: {
-          students: id,
+          students: student._id,
         },
       },
     );
@@ -186,7 +272,7 @@ export const deleteStudent = async (req, res) => {
       }
     }
 
-    await userModel.findByIdAndDelete(id);
+    await userModel.findByIdAndDelete(student._id);
 
     return res.status(200).json({
       message: "Delete student successfully",
@@ -195,7 +281,7 @@ export const deleteStudent = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -225,7 +311,7 @@ export const getCoursesStudents = async (req, res) => {
   } catch (error) {
      return res.status(500).json({
       message: "Internal Server Error",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 }

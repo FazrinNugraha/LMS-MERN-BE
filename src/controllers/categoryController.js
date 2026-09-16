@@ -1,21 +1,20 @@
+import mongoose from "mongoose";
 import Category from "../models/categoryModel.js";
-import Course from "../models/courseModel.js";
+import { caseInsensitiveExact } from "../utils/regex.js";
 
 // Get all categories
 export const getAllCategories = async (req, res) => {
   try {
     const categories = await Category.find()
-      .populate({
-        path: "courses",
-        select: "name thumbnail_url",
-      })
+      .select("name courses createdAt updatedAt")
       .sort({ createdAt: -1 });
 
+    // ⚠️ Endpoint ini publik → jangan kirim daftar course (id/thumbnail),
+    // cukup jumlahnya saja supaya id course tidak bisa di-enumerate.
     const categoriesWithCount = categories.map((category) => ({
       _id: category._id,
       name: category.name,
-      totalCourses: category.courses.length,
-      courses: category.courses,
+      totalCourses: category.courses?.length ?? 0,
       createdAt: category.createdAt,
       updatedAt: category.updatedAt,
     }));
@@ -29,7 +28,7 @@ export const getAllCategories = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to get categories",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -39,10 +38,9 @@ export const getCategoryById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const category = await Category.findById(id).populate({
-      path: "courses",
-      select: "name thumbnail_url tagline",
-    });
+    const category = await Category.findById(id).select(
+      "name courses createdAt updatedAt",
+    );
 
     if (!category) {
       return res.status(404).json({
@@ -56,8 +54,7 @@ export const getCategoryById = async (req, res) => {
       data: {
         _id: category._id,
         name: category.name,
-        totalCourses: category.courses.length,
-        courses: category.courses,
+        totalCourses: category.courses?.length ?? 0,
         createdAt: category.createdAt,
         updatedAt: category.updatedAt,
       },
@@ -67,7 +64,7 @@ export const getCategoryById = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to get category",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -77,9 +74,10 @@ export const createCategory = async (req, res) => {
   try {
     const { name } = req.body;
 
-    // Check if category already exists
+    // Check if category already exists (exact match case-insensitive).
+    // Regex di-escape supaya input user tidak bisa jadi regex injection / ReDoS.
     const existingCategory = await Category.findOne({
-      name: { $regex: new RegExp(`^${name}$`, "i") },
+      name: caseInsensitiveExact(name),
     });
 
     if (existingCategory) {
@@ -106,7 +104,7 @@ export const createCategory = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to create category",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -116,6 +114,13 @@ export const updateCategory = async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: "Category not found",
+      });
+    }
 
     // Check if category exists
     const category = await Category.findById(id);
@@ -128,7 +133,7 @@ export const updateCategory = async (req, res) => {
 
     // Check if new name already exists (excluding current category)
     const existingCategory = await Category.findOne({
-      name: { $regex: new RegExp(`^${name}$`, "i") },
+      name: caseInsensitiveExact(name),
       _id: { $ne: id },
     });
 
@@ -152,7 +157,7 @@ export const updateCategory = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to update category",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
@@ -161,6 +166,13 @@ export const updateCategory = async (req, res) => {
 export const deleteCategory = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: "Category not found",
+      });
+    }
 
     const category = await Category.findById(id);
     if (!category) {
@@ -189,7 +201,7 @@ export const deleteCategory = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to delete category",
-      error: error.message,
+      error: process.env.NODE_ENV === "production" ? undefined : error.message,
     });
   }
 };
