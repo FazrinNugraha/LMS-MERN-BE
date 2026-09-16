@@ -78,7 +78,7 @@ export const signUpAction = async (req, res) => {
             }
         });
     } catch (error) {
-        console.log(error);
+        console.error(error);
         return res.status(500).json({
             message: 'Internal Server error'
         });
@@ -156,7 +156,7 @@ export const signInAction  = async (req, res) => {
     })
         
     } catch (error) {
-        console.log(error);
+        console.error(error);
         return res.status(500).json({
             message: 'Internal Server Error',
             error: process.env.NODE_ENV === "production" ? undefined : error.message,

@@ -141,7 +141,6 @@ export const postCourse = async (req, res) => {
 
     // ✅ Upload ke Cloudinary secara manual (kompatibel multer v2)
     const cloudinaryResult = await uploadCourseThumbnail(req.file);
-    console.log("Cloudinary URL:", cloudinaryResult.secure_url);
 
     // ✅ Buat course baru - Simpan full URL dari Cloudinary
     const course = new courseModel({
