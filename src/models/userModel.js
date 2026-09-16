@@ -3,7 +3,8 @@ import mongoose from "mongoose";
 const userModel = new mongoose.Schema({
     name: {
         type: String,
-        required: true
+        required: true,
+        trim: true
     },
     photo: {
         type: String,
@@ -11,11 +12,19 @@ const userModel = new mongoose.Schema({
     },
     email: {
         type: String,
-        required: true
+        required: true,
+        unique: true,
+        lowercase: true,
+        trim: true
     },
     password: {
         type: String,
         required: true
+    },
+    // Menandai kapan password terakhir diganti → dipakai verifyToken untuk
+    // membuat semua token lama otomatis tidak berlaku.
+    passwordChangedAt: {
+        type: Date
     },
     role: {
         type: String,
@@ -28,7 +37,7 @@ const userModel = new mongoose.Schema({
     }],
     manager: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Course'
+        ref: 'User'
     }
 })
 

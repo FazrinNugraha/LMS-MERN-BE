@@ -1,8 +1,8 @@
 import bcrypt from 'bcryptjs'
 import userModel from '../models/userModel.js'
-import TransactionModel from '../models/transactionModel.js'
 import jwt from 'jsonwebtoken'
 import transactionModel from '../models/transactionModel.js'
+import { caseInsensitiveExact } from '../utils/regex.js'
 
 
 export const signUpAction = async (req, res) => {
@@ -12,6 +12,17 @@ export const signUpAction = async (req, res) => {
 
     try {
         const body = req.body;
+
+        // 🔒 Satu email hanya boleh punya satu akun (case-insensitive)
+        const emailExists = await userModel.exists({
+            email: caseInsensitiveExact(body.email),
+        });
+
+        if (emailExists) {
+            return res.status(400).json({
+                message: 'Email already registered'
+            });
+        }
 
         const hashPassword = bcrypt.hashSync(body.password, 12);
 
@@ -23,9 +34,13 @@ export const signUpAction = async (req, res) => {
             role: 'manager'
         });
 
-        const transaction = new TransactionModel({
+        // Harga paket manager: SEKALI BAYAR (tanpa masa aktif / tanpa perpanjangan).
+        // Diambil dari env supaya tidak hardcode → lihat .env.example (MANAGER_PLAN_PRICE)
+        const planPrice = Number(process.env.MANAGER_PLAN_PRICE ?? 200000);
+
+        const transaction = new transactionModel({
             user: user._id,
-            price: 200000
+            price: planPrice
         });
 
         const midtrans = await fetch(midtransUrl, {
@@ -75,10 +90,10 @@ export const signInAction  = async (req, res) => {
     try {
     const body = req.body
 
-    const existingUser = await userModel
-    .findOne()
-    .where('email')
-    .equals(body.email)
+    // Case-insensitive supaya user lama yang emailnya tersimpan dengan huruf besar tetap bisa login
+    const existingUser = await userModel.findOne({
+        email: caseInsensitiveExact(body.email),
+    })
 
     if (!existingUser) {
         return res.status(400).json({
@@ -97,6 +112,9 @@ export const signInAction  = async (req, res) => {
         })       
     }
 
+    // Paket manager = SEKALI BAYAR (tanpa masa aktif / tanpa perpanjangan),
+    // jadi cukup ada SATU transaksi sukses. Kalau nanti berubah jadi langganan
+    // bulanan, tambahkan pengecekan masa aktif di sini.
     const isvalidUser = await transactionModel.findOne({
         user: existingUser._id,
         status: 'succses'
@@ -116,7 +134,14 @@ export const signInAction  = async (req, res) => {
      },
 
      process.env.SECRET_KEY_JWT,
-     {expiresIn: '7 days'}
+     {
+         expiresIn: '7 days',
+         algorithm: 'HS256',
+         // issuer/audience hanya ditambahkan kalau env-nya diset, supaya opt-in
+         // dan tidak langsung membatalkan token lama.
+         ...(process.env.JWT_ISSUER ? { issuer: process.env.JWT_ISSUER } : {}),
+         ...(process.env.JWT_AUDIENCE ? { audience: process.env.JWT_AUDIENCE } : {}),
+     }
 )
 
     return res.json({
@@ -134,7 +159,7 @@ export const signInAction  = async (req, res) => {
         console.log(error);
         return res.status(500).json({
             message: 'Internal Server Error',
-            error: error.message
+            error: process.env.NODE_ENV === "production" ? undefined : error.message,
         })
         
     }
